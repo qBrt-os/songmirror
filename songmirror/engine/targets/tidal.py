@@ -28,7 +28,7 @@ from ..matching import normalize_isrc, normalize_text, romanized, track_key
 from .base import MirrorTarget, TargetAuthError, TargetTransientError
 from .provider_utils import (
     best_candidate, chunks, compatible_isrc_candidates, iso_duration_ms,
-    source_playlist_details, title_with_version,
+    isrc_candidate_compatible, source_playlist_details, title_with_version,
 )
 
 API = "https://openapi.tidal.com/v2"
@@ -678,7 +678,8 @@ class TidalTarget(MirrorTarget):
         candidates = compatible_isrc_candidates(track, cache)
         isrc = normalize_isrc(track.get("isrc"))
         checked = cache.setdefault("_tidal_single_isrc", set())
-        if re.fullmatch(r"[A-Z]{2}[A-Z0-9]{3}[0-9]{7}", isrc) and not candidates and isrc not in checked:
+        valid_isrc = re.fullmatch(r"[A-Z]{2}[A-Z0-9]{3}[0-9]{7}", isrc)
+        if valid_isrc and not candidates and isrc not in checked:
             # Bulk lookup returns one release per ISRC; single lookup offers alternatives.
             self._prefetch_isrcs([isrc], cache)
             checked.add(isrc)
@@ -710,6 +711,16 @@ class TidalTarget(MirrorTarget):
             )
             identifiers = ((result.get("relationships") or {}).get("tracks") or {}).get("data") or []
             candidates = self._tracks_from_body({"data": identifiers, "included": body.get("included") or []})
+            if valid_isrc and not track.get("_raw", track).get("_isrc_inferred"):
+                exact = [candidate for candidate in candidates
+                         if normalize_isrc(candidate.get("isrc")) == isrc
+                         and isrc_candidate_compatible(track, candidate)]
+                if exact:
+                    # A title/artist key can be shared by different recordings.
+                    cache["isrc"][isrc] = exact
+                    cache["dirty"] = True
+                    polite_sleep(0.25)
+                    return best_candidate(track, exact) or str(exact[0]["id"]), "isrc"
             best = best_candidate(track, candidates)
             if best:
                 break

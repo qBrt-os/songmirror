@@ -31,6 +31,12 @@ def _isrc_metadata_compatible(track, candidate):
     return recording_metadata_compatible(track, candidate)
 
 
+def isrc_candidate_compatible(track, candidate):
+    return (bool(candidate and candidate.get("id"))
+            and candidate.get("streamable") is not False
+            and _isrc_metadata_compatible(track, candidate))
+
+
 def compatible_isrc_candidates(track, cache):
     """Use an ISRC crosswalk only when its known recording metadata agrees.
 
@@ -39,9 +45,7 @@ def compatible_isrc_candidates(track, cache):
     """
     return [
         candidate for candidate in cache["isrc"].get(normalize_isrc(track.get("isrc")), [])
-        if candidate and candidate.get("id")
-        and candidate.get("streamable") is not False
-        and _isrc_metadata_compatible(track, candidate)
+        if isrc_candidate_compatible(track, candidate)
     ]
 
 

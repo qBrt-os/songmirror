@@ -110,3 +110,37 @@ def test_single_miss_is_not_repeated_and_manual_choice_precedes_lookup():
     target.manual_resolution = lambda *args: ("chosen", "manual")
     assert target.resolve(source, cache) == ("chosen", "manual")
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("conflict", [None, "version", "duration", "unplayable", "inferred"])
+def test_text_search_prefers_compatible_native_isrc(monkeypatch, conflict):
+    target = TidalTarget.__new__(TidalTarget)
+    target.country = "JP"
+    source = {"name": "夜に駆ける", "artists": ["歌手"], "isrc": "JPA301900123", "duration_ms": 260000}
+    lookalike = {"id": "lookalike", "name": source["name"], "artist": "歌手",
+                 "isrc": "JPA301900124", "duration_ms": 260000}
+    exact = {"id": "exact", "name": "Yoru ni Kakeru", "artist": "A different spelling",
+             "isrc": "JP-A30-19-00123", "duration_ms": 260000}
+    if conflict == "version":
+        exact["name"] += " (Live)"
+    if conflict == "duration":
+        exact["duration_ms"] += 6000
+    if conflict == "unplayable":
+        exact["streamable"] = False
+    if conflict == "inferred":
+        source["_raw"] = {"_isrc_inferred": True}
+
+    cache = {"isrc": {}, "search": {}, "manual": set()}
+    target._prefetch_isrcs = lambda *_: None
+    target._request = lambda *_, **__: SimpleNamespace(json=lambda: {})
+    target._tracks_from_body = lambda _: [exact] if conflict else [lookalike, exact]
+    monkeypatch.setattr("songmirror.engine.targets.tidal.polite_sleep", lambda _: None)
+
+    if conflict:
+        assert target.resolve(source, cache) == (None, "search")
+        assert not cache["isrc"]
+    else:
+        assert target.resolve(source, cache) == ("exact", "isrc")
+        assert cache["isrc"][source["isrc"]] == [exact]
+        assert not cache["search"]
+        assert target.expected_ids([dict(source, id="source")], {}, cache) == {"source": {"exact"}}
