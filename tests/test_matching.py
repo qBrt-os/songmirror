@@ -102,6 +102,17 @@ def test_normalize_text_preserves_canonical_accents_and_non_latin_letters():
     assert normalize_text("Cafe\u0301") == normalize_text("CAFÉ") == "café"
     assert normalize_text("mañana") != normalize_text("manana")
     assert normalize_text("嘘") == "嘘"
+    assert normalize_text("カ\u3099") == normalize_text("ｶﾞ") == "ガ"
+
+
+@pytest.mark.parametrize(("left", "right"), [("दिन", "दीन"), ("সুর", "সার"), ("セ", "セ\u309a")])
+def test_combining_marks_distinguish_track_titles_and_artists(left, right):
+    assert normalize_text(right) == right
+    assert track_key(left, "Singer") != track_key(right, "Singer")
+    assert track_key("Song", left) != track_key("Song", right)
+    assert not score_candidate(left, ["Singer"], 180000, right, "Singer", 180000)[1]
+    assert not score_candidate("Song", [left], 180000, "Song", right, 180000)[1]
+    assert score_candidate(right, ["Singer"], 180000, right, "Singer", 180000)[1]
 
 
 def test_turkish_case_variants_produce_the_same_track_key():

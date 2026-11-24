@@ -121,23 +121,41 @@ def tracks_oldest_first(tracks):
     return [track for _, track in positioned]
 
 
+def _is_combining_mark(character):
+    return unicodedata.category(character).startswith("M")
+
+
 def normalize_text(value):
-    """Unicode-aware: keeps letters/digits in ANY script (Cyrillic, CJK,
-    Bengali, ...). A Latin-only character class silently empties non-Latin
-    titles, which breaks matching and can delete real tracks.
+    """Keep letters, digits, and attached combining marks in any script.
 
     Casefolding can itself produce a decomposed sequence. Recompose that output
     before punctuation removal, and collapse the redundant combining dot from
-    Turkish capital dotted I. Otherwise ``İki`` becomes ``i ki`` when the mark
-    is mistaken for punctuation. Do not discard combining marks wholesale:
-    doing so would conflate accent-distinct canonical keys in every language.
+    Turkish capital dotted I so ``İki`` and ``iki`` share a key. Other combining
+    marks can distinguish titles and credits that share the same base letters.
     """
     if not value:
         return ""
     normalized = unicodedata.normalize("NFKC", str(value)).casefold()
     normalized = unicodedata.normalize("NFKC", normalized.replace("i\u0307", "i"))
-    normalized = re.sub(r"[\W_]+", " ", normalized)
-    return " ".join(normalized.split())
+    if normalized.isascii():
+        return re.sub(r"[\W_]+", " ", normalized).strip()
+    characters = []
+    for character in normalized:
+        if character.isalnum() or (
+            characters and characters[-1] != " " and _is_combining_mark(character)
+        ):
+            characters.append(character)
+        else:
+            characters.append(" ")
+    return " ".join("".join(characters).split())
+
+
+def _combining_mark_conflict(left, right):
+    """Keep fuzzy and romanized scores from hiding a mark-only difference."""
+    if left == right or (left.isascii() and right.isascii()):
+        return False
+    return ("".join(c for c in left if not _is_combining_mark(c))
+            == "".join(c for c in right if not _is_combining_mark(c)))
 
 
 def normalize_isrc(value):
@@ -381,9 +399,12 @@ def _artist_similarity(track, candidate):
     common fragment of two different comma-containing band names.
     """
     names, candidates = _artist_names(track), _artist_names(candidate)
+    left_credit, right_credit = " ".join(names), " ".join(candidates)
+    if _combining_mark_conflict(normalize_text(left_credit), normalize_text(right_credit)):
+        return 0.0
     tribute = re.compile(r"\b(?:tribute|karaoke|covers?|renditions?)\b")
-    left_markers = set(tribute.findall(romanized(" ".join(names))))
-    right_markers = set(tribute.findall(romanized(" ".join(candidates))))
+    left_markers = set(tribute.findall(romanized(left_credit)))
+    right_markers = set(tribute.findall(romanized(right_credit)))
     if left_markers != right_markers:
         return 0.0
 
@@ -413,7 +434,7 @@ def _artist_similarity(track, candidate):
     # Fuzzy aggregate strings can hide one conflicting performer in a long
     # shared credit. Only exact formatting equivalence or a complete subset of
     # credited names is sufficient; a shared guest alone is not.
-    if variants([" ".join(names)]) & variants([" ".join(candidates)]):
+    if variants([left_credit]) & variants([right_credit]):
         return 1.0
     return max(
         all_credits(left_parts, right_parts),
@@ -460,6 +481,8 @@ def fuzzy_in(key, keys, threshold=FUZZY_THRESHOLD):
 def score_candidate(name, artists, duration_ms, cand_name, cand_artist, cand_duration_ms):
     """(score in 0..1, acceptable) for a search-result candidate vs the wanted
     track — the fuzzy fallback when no ISRC/link resolves it."""
+    if _combining_mark_conflict(loose_name(name), loose_name(cand_name)):
+        return 0.0, False
     wanted = {"name": name, "artists": artists, "duration_ms": duration_ms}
     candidate = {"name": cand_name, "artist": cand_artist, "duration_ms": cand_duration_ms}
     if not recording_metadata_compatible(wanted, candidate):
